@@ -14,9 +14,15 @@ final class PowerMonitorStore: ObservableObject {
     private let processStatsProvider = ProcessEnergyStatsProvider.shared
     private let subsystemPowerProvider = PowermetricsSubsystemPowerProvider.shared
     private let logger = Logger(subsystem: AppConstants.subsystem, category: "store")
+    private var lastProcessStatsRefreshDate: Date?
+    private var lastHistorySaveDate: Date?
 
     private static let maxHistoryAge: TimeInterval = 60 * 60 * 24 * 10
-    private static let maxHistoryCount = 30_000
+    private static let maxHistoryCount = 20_000
+    private static let fullResolutionHistoryAge: TimeInterval = 6 * 60 * 60
+    private static let minuteResolutionHistoryAge: TimeInterval = 24 * 60 * 60
+    private static let processStatsRefreshInterval: TimeInterval = 30
+    private static let historySaveInterval: TimeInterval = 30
 
     static let shared = PowerMonitorStore.live()
 
@@ -86,8 +92,8 @@ final class PowerMonitorStore: ObservableObject {
         switch metric {
         case .power:
             return [
-                buildSeries(kind: .systemInputPower, buckets: buckets) { bucket in
-                    average(bucket.compactMap(\.systemPowerWatts).filter { $0 > 0.05 })
+                buildSeries(kind: .adapterInputPower, buckets: buckets) { bucket in
+                    average(bucket.compactMap(\.adapterRealtimePowerWatts).filter { $0 > 0.05 })
                 },
                 buildSeries(kind: .batteryDischargePower, buckets: buckets) { bucket in
                     average(bucket.compactMap(\.batteryFlowWatts).filter { $0 < -0.05 }.map(abs))
@@ -230,18 +236,25 @@ final class PowerMonitorStore: ObservableObject {
     private func refresh() async {
         do {
             let collector = self.collector
-            async let snapshotTask: PowerSnapshot = Task.detached(priority: .utility) {
+            let shouldRefreshProcesses = lastProcessStatsRefreshDate.map {
+                Date().timeIntervalSince($0) >= Self.processStatsRefreshInterval
+            } ?? true
+            let processTask: Task<[ProcessEnergyStat], Never>? = shouldRefreshProcesses
+                ? Task.detached(priority: .utility) { [processStatsProvider] in
+                    processStatsProvider.currentStats()
+                }
+                : nil
+
+            let snapshot = try await Task.detached(priority: .utility) {
                 try collector.readSnapshot()
             }.value
-            async let processStatsTask: [ProcessEnergyStat] = Task.detached(priority: .utility) { [processStatsProvider] in
-                processStatsProvider.currentStats()
-            }.value
-
-            let snapshot = try await snapshotTask
-            let processStats = await processStatsTask
 
             apply(snapshot)
-            topProcesses = processStats
+
+            if let processTask {
+                topProcesses = await processTask.value
+                lastProcessStatsRefreshDate = Date()
+            }
         } catch {
             lastErrorMessage = error.localizedDescription
             logger.error("Power refresh failed: \(error.localizedDescription, privacy: .public)")
@@ -253,19 +266,53 @@ final class PowerMonitorStore: ObservableObject {
         latestSnapshot = snapshot
         history = prunedHistory(afterAppending: snapshot)
 
-        let historyToPersist = history
-        historyStore.save(historyToPersist)
+        let shouldPersist = lastHistorySaveDate.map {
+            snapshot.timestamp.timeIntervalSince($0) >= Self.historySaveInterval
+        } ?? true
+
+        if shouldPersist {
+            let historyToPersist = history
+            historyStore.save(historyToPersist)
+            lastHistorySaveDate = snapshot.timestamp
+        }
     }
 
     private func prunedHistory(afterAppending snapshot: PowerSnapshot) -> [PowerSnapshot] {
         let merged = (history + [snapshot]).sorted { $0.timestamp < $1.timestamp }
         let lowerBound = snapshot.timestamp.addingTimeInterval(-Self.maxHistoryAge)
         let ageFiltered = merged.filter { $0.timestamp >= lowerBound }
+        let fullResolutionCutoff = snapshot.timestamp.addingTimeInterval(-Self.fullResolutionHistoryAge)
+        let minuteResolutionCutoff = snapshot.timestamp.addingTimeInterval(-Self.minuteResolutionHistoryAge)
 
-        if ageFiltered.count > Self.maxHistoryCount {
-            return Array(ageFiltered.suffix(Self.maxHistoryCount))
+        let older = downsample(
+            ageFiltered.filter { $0.timestamp < minuteResolutionCutoff },
+            interval: 5 * 60
+        )
+        let medium = downsample(
+            ageFiltered.filter { $0.timestamp >= minuteResolutionCutoff && $0.timestamp < fullResolutionCutoff },
+            interval: 60
+        )
+        let recent = ageFiltered.filter { $0.timestamp >= fullResolutionCutoff }
+        let compacted = (older + medium + recent).sorted { $0.timestamp < $1.timestamp }
+
+        if compacted.count > Self.maxHistoryCount {
+            return Array(compacted.suffix(Self.maxHistoryCount))
         }
 
-        return ageFiltered
+        return compacted
+    }
+
+    private func downsample(_ snapshots: [PowerSnapshot], interval: TimeInterval) -> [PowerSnapshot] {
+        guard interval > 0 else {
+            return snapshots
+        }
+
+        var latestByBucket: [Int: PowerSnapshot] = [:]
+        for snapshot in snapshots {
+            let bucket = Int(snapshot.timestamp.timeIntervalSince1970 / interval)
+            latestByBucket[bucket] = snapshot
+        }
+
+        return latestByBucket.values.sorted { $0.timestamp < $1.timestamp }
     }
 }

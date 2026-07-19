@@ -19,7 +19,7 @@ Compact glass panel. No fake data.
 [![Swift](https://img.shields.io/badge/Swift-6.2-f05138?style=for-the-badge)](https://www.swift.org/)
 [![License](https://img.shields.io/github/license/LCYLYM/MacoPowerMonitor?style=for-the-badge)](LICENSE)
 
-[Download Latest Release](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest) • [DMG Installer](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest/download/MacoPowerMonitor-v0.3.0-macos.dmg) • [ZIP Package](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest/download/MacoPowerMonitor-v0.3.0-macos.zip) • [Report Bug](https://github.com/LCYLYM/MacoPowerMonitor/issues/new?template=bug_report.md) • [Request Feature](https://github.com/LCYLYM/MacoPowerMonitor/issues/new?template=feature_request.md)
+[Download Latest Release](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest) • [DMG Installer](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest/download/MacoPowerMonitor-v0.3.0-macos.dmg) • [Portable Executable](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest/download/MacoPowerMonitor-v0.3.0-macos-arm64.zip) • [ZIP Package](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest/download/MacoPowerMonitor-v0.3.0-macos.zip) • [Report Bug](https://github.com/LCYLYM/MacoPowerMonitor/issues/new?template=bug_report.md) • [Request Feature](https://github.com/LCYLYM/MacoPowerMonitor/issues/new?template=feature_request.md)
 
 <img src="docs/images/6.png" alt="Maco Power Monitor poster" width="420" />
 
@@ -56,11 +56,13 @@ It focuses on three things:
 
 | Feature | Why it matters |
 | --- | --- |
-| Menu bar status icon | Open the dashboard instantly with one click |
+| Live menu bar battery indicator | Show the exact battery percentage and a continuously filled battery icon, including real charging progress |
 | Compact glass panel | Feels native to macOS and stays out of the way |
 | Formal app icon and DMG installer | Drag-to-Applications setup that feels ready for public release |
 | Multi-select chart toggles | Show `Power`, `Battery`, and `Current` together |
-| Bidirectional power view | Separate `System Input`, `Battery Output`, and `Battery Recharge` clearly |
+| Adapter protocol and live power | Show USB PD / Apple private / QC only when macOS exposes evidence, together with live Mac-side input watts |
+| Adapter power-time curve | Persist and chart live adapter input power at 1-second sampling with long-range downsampling |
+| Bidirectional power view | Separate `Adapter Live Input`, `Battery Output`, and `Battery Recharge` clearly |
 | Charge and discharge current | Understand battery flow direction without ambiguous mixed lines |
 | Real battery health metrics | Design capacity, full charge capacity, cycle count, health, voltage and temperature |
 | Background keepalive setting | Keep the app less likely to be automatically terminated while staying lightweight |
@@ -83,10 +85,21 @@ It focuses on three things:
 1. Open [Latest Release](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest)
 2. Download `MacoPowerMonitor-v0.3.0-macos.zip`
 3. Unzip it
-4. Move `MacoPowerMonitor.app` into `Applications`
-5. Launch the app and click the menu bar icon
+4. Double-click `MacoPowerMonitor.app` to run it directly, or move it into `Applications` if you prefer
+5. Click the menu bar icon
 
-#### Option 3: Build from source
+#### Option 3: Use the portable executable (no installation)
+
+For Apple Silicon Macs, download `MacoPowerMonitor-v0.3.0-macos-arm64.zip` from the release page and unzip it. Then either:
+
+```bash
+cd MacoPowerMonitor-v0.3.0-macos-arm64
+./MacoPowerMonitor
+```
+
+or double-click `Launch MacoPowerMonitor.command`. The menu bar monitor runs without being moved to `Applications`. Keep the Terminal session open while it is running; `Launch at login` remains available only in the `.app` build.
+
+#### Option 4: Build from source
 
 Requirements:
 
@@ -98,11 +111,17 @@ swift build
 swift run
 ```
 
-#### Option 4: Package locally
+#### Option 5: Package locally
 
 ```bash
 ./scripts/package_app.sh
 open dist/MacoPowerMonitor.app
+```
+
+To build the portable executable bundle locally:
+
+```bash
+./scripts/build_portable_executable.sh
 ```
 
 To build the DMG installer locally:
@@ -124,7 +143,7 @@ All on-screen readings are backed by real macOS data sources.
 
 - `IOPowerSources` / `IOPSGetPowerSourceDescription`
 - `IOPSCopyExternalPowerAdapterDetails`
-- `ioreg -r -c AppleSmartBattery -a`
+- `IORegistryEntryCreateCFProperties` for `AppleSmartBattery` (including `PowerTelemetryData`, `AdapterDetails`, and `FedDetails`)
 - `system_profiler SPPowerDataType -json`
 - `top -l 1 -stats pid,command,cpu,mem,power`
 - `powermetrics`
@@ -136,12 +155,12 @@ Notes:
 
 ### What The Charts Mean
 
-- `Power`: system input, battery output and battery recharge are shown as separate flows
+- `Power`: live adapter input, battery output and battery recharge are shown as separate flows
 - `Battery`: battery percentage history
 - `Current`: discharge current and charge current are separated instead of mixed together
 
 This is intentional.  
-Adapter rated wattage, actual system input and battery-side flow are not the same thing, so the app keeps them distinct.
+Adapter contract wattage, live Mac-side input and battery-side flow are not the same thing, so the app keeps them distinct. macOS does not expose wall-socket losses, and protocol labels remain unknown when the OS provides no reliable evidence.
 
 ### Privacy and Security
 
@@ -217,7 +236,7 @@ Maco Power Monitor 是一个轻量级 macOS 状态栏电源监控工具，重点
 - 完全原生：基于 `SwiftUI + AppKit + IOKit`，不是 Electron，也不是网页壳
 - 不造数据：电池、电源适配器、进程能耗等信息都来自 macOS 系统接口或系统命令
 - 足够轻：常驻状态栏，点开即看，用完即关，不占 Dock，不打断工作流
-- 信息更有用：把系统输入、电池输出、回充、电流、健康度和高耗电应用集中在一个面板里
+- 信息更有用：把适配器实时功率、充电协议、电池输出、回充、电流、健康度和高耗电应用集中在一个面板里
 - 对限制诚实：拿不到的数据不会用猜测值硬补，需要管理员权限的指标会明确说明
 
 ### 功能亮点
@@ -228,7 +247,9 @@ Maco Power Monitor 是一个轻量级 macOS 状态栏电源监控工具，重点
 | 紧凑玻璃面板 | 更贴近 macOS 原生风格，视觉轻但信息密度高 |
 | 正式 App 图标与 DMG 安装包 | 拖入 `Applications` 即可安装，公开发布更完整 |
 | 多选图表切换 | `功耗 / 电量 / 电流` 可以同时显示，不用来回切图 |
-| 双向功率视图 | 清晰区分 `系统输入`、`电池输出`、`电池回充` |
+| 充电协议与实时功率 | 仅在 macOS 提供可靠字段时显示 USB PD / Apple 私有 / QC，并注明实时 Mac 侧输入功率 |
+| 适配器功率-时间曲线 | 以 1 秒间隔记录实时输入功率，并为长时间历史自动降采样 |
+| 双向功率视图 | 清晰区分 `适配器实时输入`、`电池输出`、`电池回充` |
 | 充放电电流拆分 | 不把正负方向混在一起，更容易理解当前流向 |
 | 真实电池健康指标 | 设计容量、满充容量、循环次数、健康度、电压、温度 |
 | 后台保活设置 | 在保持轻量的前提下，降低应用被系统自动终止的概率 |
@@ -251,10 +272,21 @@ Maco Power Monitor 是一个轻量级 macOS 状态栏电源监控工具，重点
 1. 打开 [Latest Release](https://github.com/LCYLYM/MacoPowerMonitor/releases/latest)
 2. 下载 `MacoPowerMonitor-v0.3.0-macos.zip`
 3. 解压
-4. 将 `MacoPowerMonitor.app` 移动到 `Applications`
-5. 打开应用并点击状态栏图标
+4. 可以直接双击 `MacoPowerMonitor.app` 运行；也可以按需要移动到 `Applications`
+5. 点击状态栏图标
 
-#### 方式三：从源码运行
+#### 方式三：使用免安装可执行文件
+
+Apple Silicon Mac 可下载 Release 中的 `MacoPowerMonitor-v0.3.0-macos-arm64.zip`，解压后无需安装。可任选一种方式启动：
+
+```bash
+cd MacoPowerMonitor-v0.3.0-macos-arm64
+./MacoPowerMonitor
+```
+
+也可以双击 `Launch MacoPowerMonitor.command`。程序会显示在菜单栏中；运行期间请保持对应的终端会话开启。免安装可执行文件不能使用“开机自启”，该功能仅支持 `.app` 版本。
+
+#### 方式四：从源码运行
 
 要求：
 
@@ -266,11 +298,17 @@ swift build
 swift run
 ```
 
-#### 方式四：本地打包 `.app`
+#### 方式五：本地打包 `.app`
 
 ```bash
 ./scripts/package_app.sh
 open dist/MacoPowerMonitor.app
+```
+
+如果你想在本地生成免安装可执行文件包：
+
+```bash
+./scripts/build_portable_executable.sh
 ```
 
 如果你想在本地生成 DMG 安装包：
@@ -292,7 +330,7 @@ open dist/MacoPowerMonitor.dmg
 
 - `IOPowerSources` / `IOPSGetPowerSourceDescription`
 - `IOPSCopyExternalPowerAdapterDetails`
-- `ioreg -r -c AppleSmartBattery -a`
+- `IORegistryEntryCreateCFProperties` for `AppleSmartBattery` (including `PowerTelemetryData`, `AdapterDetails`, and `FedDetails`)
 - `system_profiler SPPowerDataType -json`
 - `top -l 1 -stats pid,command,cpu,mem,power`
 - `powermetrics`
@@ -304,12 +342,12 @@ open dist/MacoPowerMonitor.dmg
 
 ### 图表含义
 
-- `功耗`：分别显示系统输入、电池输出和电池回充
+- `功耗`：分别显示适配器实时输入、电池输出和电池回充
 - `电量`：展示电池百分比历史
 - `电流`：把放电电流和充电电流分开，不混在一条线里
 
 这是刻意设计。  
-适配器额定功率、当前系统输入功率、电池侧功率流向，本来就不是同一个概念，所以界面不会把它们混为一谈。
+适配器协商上限、Mac 侧实时输入功率、电池侧功率流向，本来就不是同一个概念，所以界面不会把它们混为一谈。macOS 不公开墙插侧转换损耗；系统没有可靠字段时，协议会显示为未知而不是猜测。
 
 ### 隐私与安全
 

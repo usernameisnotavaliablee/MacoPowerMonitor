@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = PowerMonitorStore.shared
     private let runtimeSettings = AppRuntimeSettings.shared
     private let logger = Logger(subsystem: AppConstants.subsystem, category: "app")
+    private let statusIconAnimator = StatusBarBatteryIconAnimator()
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
     private var cancellables = Set<AnyCancellable>()
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        statusIconAnimator.invalidate()
         if let globalMonitor {
             NSEvent.removeMonitor(globalMonitor)
         }
@@ -44,8 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemConfigurationAttempts += 1
 
         if let existingItem = statusItem {
-            if existingItem.button != nil {
+            if let existingButton = existingItem.button {
                 existingItem.isVisible = true
+                statusIconAnimator.attach(to: existingButton)
                 updateStatusItem(snapshot: store.latestSnapshot)
                 logger.notice("Status item became available on attempt \(self.statusItemConfigurationAttempts, privacy: .public)")
                 return
@@ -55,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem = nil
         }
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.isVisible = true
 
         guard let button = item.button else {
@@ -70,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleProportionallyDown
         button.title = ""
+        statusIconAnimator.attach(to: button)
         statusItem = item
         logger.notice("Configured status item on attempt \(self.statusItemConfigurationAttempts, privacy: .public)")
         updateStatusItem(snapshot: store.latestSnapshot)
@@ -99,44 +103,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateStatusItem(snapshot: snapshot)
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateStatusItem(snapshot: self.store.latestSnapshot)
+            }
+            .store(in: &cancellables)
+
     }
 
     private func updateStatusItem(snapshot: PowerSnapshot?) {
         guard let button = statusItem?.button else { return }
 
-        let symbolName: String
-
-        if let snapshot {
-            if snapshot.isCharging {
-                symbolName = "battery.100percent.bolt"
-            } else {
-                switch snapshot.batteryLevel {
-                case ..<0.15: symbolName = "battery.25percent"
-                case ..<0.35: symbolName = "battery.25percent"
-                case ..<0.60: symbolName = "battery.50percent"
-                case ..<0.85: symbolName = "battery.75percent"
-                default: symbolName = "battery.100percent"
-                }
-            }
+        let connectionGlyph: StatusBarBatteryConnectionGlyph
+        if let snapshot, snapshot.source == .acPower {
+            connectionGlyph = snapshot.chargeHoldReason != nil || snapshot.isCharged
+                ? .plug
+                : .bolt
         } else {
-            symbolName = "battery.0percent"
+            connectionGlyph = .none
         }
 
-        let resolvedSymbolName: String
-        if NSImage(systemSymbolName: symbolName, accessibilityDescription: "Power Monitor") != nil {
-            resolvedSymbolName = symbolName
-        } else {
-            resolvedSymbolName = "battery.100percent"
-        }
-
-        let image = NSImage(systemSymbolName: resolvedSymbolName, accessibilityDescription: "Power Monitor")
-        image?.isTemplate = true
-        button.image = image
+        statusIconAnimator.update(state: StatusBarBatteryIconState(
+            level: snapshot?.batteryLevel,
+            connectionGlyph: connectionGlyph,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+        ))
         button.appearsDisabled = false
         button.toolTip = snapshot.map {
-            "电量 \(PowerFormatting.percent($0.batteryLevel)) · \($0.displayStatusText) · 系统输入 \(PowerFormatting.watts($0.systemPowerWatts))"
+            let limit = $0.chargeLimitPercent.map { " · 充电目标 \($0)%" } ?? ""
+            return "电量 \(PowerFormatting.percent($0.batteryLevel)) · \($0.displayStatusText)\(limit) · 适配器实时 \(PowerFormatting.watts($0.adapterRealtimePowerWatts)) · \($0.adapterProtocol?.shortName ?? "协议未知")"
         } ?? "正在读取电源信息"
+        button.setAccessibilityLabel("Maco Power Monitor")
+        button.setAccessibilityValue(snapshot.map {
+            "电量 \(PowerFormatting.percent($0.batteryLevel))，\($0.displayStatusText)"
+        } ?? "正在读取电源信息")
     }
+
 
     @objc
     private func togglePanelFromStatusItem() {
