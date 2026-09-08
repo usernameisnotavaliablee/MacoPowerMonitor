@@ -59,7 +59,7 @@ final class ProcessEnergyStatsProvider: ProcessEnergyStatsProviding, @unchecked 
         let data = try CommandRunner.run(
             executable: "/bin/ps",
             arguments: ["-axo", "pid=,%cpu=,rss=,comm="],
-            timeout: 0.25
+            timeout: 2
         )
 
         let output = String(decoding: data, as: UTF8.self)

@@ -126,6 +126,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.closePanelForResignActiveIfNeeded()
+            }
+            .store(in: &cancellables)
+
+    }
+
+    /// Cmd-Tab produces no mouse event, so resigning active must also dismiss
+    /// the panel. The osascript "with administrator privileges" prompt is
+    /// presented by SecurityAgent in the foreground; resigning active to it is
+    /// part of the in-panel authorization flow and must not close the panel.
+    private func closePanelForResignActiveIfNeeded() {
+        guard let panel, panel.isVisible else { return }
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier != "com.apple.SecurityAgent" else { return }
+        closePanel()
     }
 
     private func updateStatusItem(snapshot: PowerSnapshot?) {

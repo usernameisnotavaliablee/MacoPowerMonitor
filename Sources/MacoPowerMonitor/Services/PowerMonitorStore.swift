@@ -288,8 +288,11 @@ final class PowerMonitorStore: ObservableObject {
                 let state = stageSignposter.beginInterval("PanelSnapshot")
                 defer { stageSignposter.endInterval("PanelSnapshot", state) }
                 do {
+                    let snapshot = try await Task.detached(priority: .utility) {
+                        try collector.readSnapshot()
+                    }.value
                     return .snapshot(
-                        .success(try collector.readSnapshot()),
+                        .success(snapshot),
                         startedAt.duration(to: clock.now)
                     )
                 } catch {
@@ -303,8 +306,11 @@ final class PowerMonitorStore: ObservableObject {
                 let startedAt = clock.now
                 let state = stageSignposter.beginInterval("PanelProcesses")
                 defer { stageSignposter.endInterval("PanelProcesses", state) }
+                let processes = await Task.detached(priority: .utility) {
+                    processStatsProvider.currentStats(limit: 6, forceRefresh: true)
+                }.value
                 return .processes(
-                    processStatsProvider.currentStats(limit: 6, forceRefresh: true),
+                    processes,
                     startedAt.duration(to: clock.now)
                 )
             }

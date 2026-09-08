@@ -16,7 +16,8 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
     private struct PrivilegedSession {
         let id: UUID
         let outputURL: URL
-        let processID: pid_t
+        let process: Process
+        let startDate: Date
     }
 
     private let logger = Logger(subsystem: AppConstants.subsystem, category: "powermetrics")
@@ -117,7 +118,8 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
         let session = PrivilegedSession(
             id: sessionID,
             outputURL: launch.outputURL,
-            processID: launch.processID
+            process: launch.process,
+            startDate: Date()
         )
         queue.sync {
             privilegedSession = session
@@ -127,8 +129,18 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
             self?.pollPrivilegedSamples(session)
         }
 
-        let deadline = Date().addingTimeInterval(12)
+        // The authorization prompt itself lives inside this process, so the
+        // user may need a while to type their password before the first sample.
+        let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
+            if !launch.process.isRunning {
+                queue.sync {
+                    guard privilegedSession?.id == sessionID else { return }
+                    privilegedSession = nil
+                    lastSampleDate = nil
+                }
+                throw launch.earlyExitError()
+            }
             if let metrics = queue.sync(execute: { () -> SubsystemPowerMetrics? in
                 guard privilegedSession?.id == sessionID, lastSampleDate != nil else { return nil }
                 return cachedMetrics
@@ -145,13 +157,18 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
         )
     }
 
-    private func launchPrivilegedSampler() throws -> (processID: pid_t, outputURL: URL) {
+    private func launchPrivilegedSampler() throws -> (process: Process, outputURL: URL, earlyExitError: () -> NSError) {
         let appProcessID = ProcessInfo.processInfo.processIdentifier
+        let outputPath = "/var/run/maco-power-monitor.metrics.plist"
+        // The osascript process must stay alive for the whole session: macOS
+        // tears down the privileged shell session (SIGKILL to the group) when a
+        // completed `do shell script ... with administrator privileges` returns,
+        // which used to kill the nohup'd sampler instantly.
         let samplerScript = """
-        output_file=$1
-        session_dir=${output_file%/*}
+        output_file=\(outputPath)
+        next_file="$output_file.next"
+        /bin/rm -rf /var/run/maco-power-monitor.* "$output_file" "$next_file"
         while /bin/kill -0 \(appProcessID) 2>/dev/null; do
-            next_file="$output_file.next"
             if /usr/bin/powermetrics --samplers cpu_power,gpu_power,ane_power -n 1 -f plist -o "$next_file"; then
                 /bin/chmod 644 "$next_file"
                 /bin/mv -f "$next_file" "$output_file"
@@ -160,47 +177,45 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
                 break
             fi
         done
-        /bin/rm -rf "$session_dir"
+        /bin/rm -f "$output_file" "$next_file"
         """
-        let command = """
-        session_dir=$(/usr/bin/mktemp -d /var/run/maco-power-monitor.XXXXXX) || exit 1
-        /bin/chmod 755 "$session_dir"
-        output_file="$session_dir/metrics.plist"
-        /usr/bin/nohup /bin/sh -c \(shellQuoted(samplerScript)) sampler "$output_file" >/dev/null 2>&1 &
-        sampler_pid=$!
-        echo "$sampler_pid $output_file"
-        """
-        let encodedCommand = Data(command.utf8).base64EncodedString()
+        let encodedCommand = Data(samplerScript.utf8).base64EncodedString()
         let appleScript = """
         do shell script "/bin/echo '\(encodedCommand)' | /usr/bin/base64 -D | /bin/sh" with administrator privileges
         """
-        let output = try CommandRunner.run(
-            executable: "/usr/bin/osascript",
-            arguments: ["-e", appleScript]
-        )
-        let fields = String(decoding: output, as: UTF8.self)
-            .split(whereSeparator: { $0.isWhitespace })
-        guard fields.count == 2,
-              let processID = pid_t(String(fields[0])),
-              processID > 0,
-              fields[1].hasPrefix("/var/run/maco-power-monitor.") else {
-            throw NSError(
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", appleScript]
+        process.standardOutput = Pipe()
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        let earlyExitError = {
+            let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let message = stderr.contains("User canceled")
+                ? "已取消管理员授权"
+                : "管理员持续采样进程已退出：\(stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
+            return NSError(
                 domain: "PowermetricsSubsystemPowerProvider",
                 code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "无法确认管理员持续采样进程已经启动"]
+                userInfo: [NSLocalizedDescriptionKey: message]
             )
         }
-        return (processID, URL(fileURLWithPath: String(fields[1])))
+        return (process, URL(fileURLWithPath: outputPath), earlyExitError)
     }
 
     private func pollPrivilegedSamples(_ session: PrivilegedSession) {
         var lastModificationDate: Date?
 
-        while isCurrentSession(session.id), processExists(session.processID) {
+        while isCurrentSession(session.id), session.process.isRunning {
             do {
                 let attributes = try FileManager.default.attributesOfItem(atPath: session.outputURL.path)
                 let modificationDate = attributes[.modificationDate] as? Date
-                if modificationDate != lastModificationDate {
+                // Ignore leftovers from earlier runs; this session's script
+                // deletes the fixed output file before sampling begins.
+                if let modificationDate,
+                   modificationDate >= session.startDate,
+                   modificationDate != lastModificationDate {
                     let data = try Data(contentsOf: session.outputURL)
                     guard let sample = data.split(separator: 0).last, !sample.isEmpty else {
                         throw CocoaError(.fileReadCorruptFile)
@@ -213,7 +228,7 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
                     }
                     lastModificationDate = modificationDate
                 }
-            } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
                 // The first atomic snapshot does not exist until powermetrics completes a sample.
             } catch {
                 logger.error("Failed to read privileged powermetrics sample: \(error.localizedDescription, privacy: .public)")
@@ -232,17 +247,11 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
         queue.sync { privilegedSession?.id == sessionID }
     }
 
-    private func processExists(_ processID: pid_t) -> Bool {
-        if kill(processID, 0) == 0 {
-            return true
-        }
-        return errno == EPERM
-    }
-
     private func fetchMetrics() throws -> SubsystemPowerMetrics {
         let data = try CommandRunner.run(
             executable: "/usr/bin/sudo",
-            arguments: ["-n", "/usr/bin/powermetrics", "--samplers", "cpu_power,gpu_power,ane_power", "-n", "1", "-f", "plist"]
+            arguments: ["-n", "/usr/bin/powermetrics", "--samplers", "cpu_power,gpu_power,ane_power", "-n", "1", "-f", "plist"],
+            timeout: 15
         )
         guard let first = data.split(separator: 0).first else {
             throw CocoaError(.fileReadCorruptFile)
@@ -263,13 +272,16 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
         )
     }
 
-    private func extractWatts(from object: Any, matching keywords: [String]) -> Double? {
+    func extractWatts(from object: Any, matching keywords: [String]) -> Double? {
         if let dictionary = object as? [String: Any] {
             for (key, value) in dictionary {
                 let loweredKey = key.lowercased()
-                if keywords.allSatisfy(loweredKey.contains), loweredKey.contains("power") {
-                    if let number = value as? Double { return number }
-                    if let number = value as? Int { return Double(number) }
+                // Exclude "Combined Power (CPU+GPU+ANE)" so CPU/GPU/ANE never match the aggregate key.
+                if keywords.allSatisfy(loweredKey.contains), loweredKey.contains("power"),
+                   !loweredKey.contains("combined") {
+                    // powermetrics plist reports subsystem power in milliwatts; convert to watts.
+                    if let number = value as? Double { return number / 1000 }
+                    if let number = value as? Int { return Double(number) / 1000 }
                 }
                 if let nested = extractWatts(from: value, matching: keywords) { return nested }
             }
@@ -285,9 +297,5 @@ final class PowermetricsSubsystemPowerProvider: @unchecked Sendable {
 
     private func unavailableMetrics(reason: String) -> SubsystemPowerMetrics {
         SubsystemPowerMetrics(cpuWatts: nil, gpuWatts: nil, aneWatts: nil, unavailableReason: reason)
-    }
-
-    private func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

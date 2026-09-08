@@ -9,13 +9,13 @@ enum ChargeHoldReason: String, Codable, Equatable, Sendable {
     var displayText: String {
         switch self {
         case .manualLimit:
-            return "已达到充电上限"
+            return "达到上限"
         case .optimizedCharging:
-            return "优化充电暂停"
+            return "优化充电"
         case .fullyCharged:
             return "已充满"
         case .inferredPolicyLimit:
-            return "已达到充电目标"
+            return "达到目标"
         }
     }
 }
