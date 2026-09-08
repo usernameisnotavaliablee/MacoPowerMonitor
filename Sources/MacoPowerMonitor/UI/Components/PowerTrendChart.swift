@@ -164,7 +164,10 @@ private struct CompactHistoryCanvas: View {
         let primarySeries = series.first(where: { $0.id == .batteryLevel }) ?? series.first
         let points = primarySeries.map(pointsForSeries) ?? []
         let bars = compactBatteryBars(from: points)
-        let barWidth: CGFloat = 6.5
+        // Bars always sit on the 48-column time grid, so width follows the
+        // fixed column pitch and can never overlap its neighbor.
+        let stepWidth = chartRect.width / CGFloat(Self.maximumBatteryBarCount)
+        let barWidth = min(max(stepWidth * 0.54, 3), 7)
 
         return ZStack {
             ForEach(bars) { bar in
@@ -180,16 +183,10 @@ private struct CompactHistoryCanvas: View {
     }
 
     /// The store retains many samples per range. Showing every sample turns a
-    /// bar chart into a solid comb, so render at most 48 time-based columns.
-    /// Each visual column is the average height of its samples and stays in
-    /// chronological position on the chart.
+    /// bar chart into a solid comb, so every sample is bucketed into 48
+    /// time-based columns. Each column is the average height of its samples
+    /// and stays in chronological position on the chart.
     private func compactBatteryBars(from points: [CGPoint]) -> [BatteryBar] {
-        guard points.count > Self.maximumBatteryBarCount else {
-            return points.enumerated().map { index, point in
-                BatteryBar(id: index, point: point, isLatest: index == points.indices.last)
-            }
-        }
-
         var sums = Array(repeating: CGFloat.zero, count: Self.maximumBatteryBarCount)
         var counts = Array(repeating: 0, count: Self.maximumBatteryBarCount)
 
@@ -203,6 +200,8 @@ private struct CompactHistoryCanvas: View {
             counts[index] += 1
         }
 
+        let lastNonEmptyIndex = counts.lastIndex { $0 > 0 }
+
         return (0..<Self.maximumBatteryBarCount).compactMap { index in
             guard counts[index] > 0 else { return nil }
 
@@ -211,7 +210,7 @@ private struct CompactHistoryCanvas: View {
             return BatteryBar(
                 id: index,
                 point: point,
-                isLatest: index == Self.maximumBatteryBarCount - 1
+                isLatest: index == lastNonEmptyIndex
             )
         }
     }
