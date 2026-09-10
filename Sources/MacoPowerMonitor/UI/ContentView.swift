@@ -326,7 +326,12 @@ struct ContentView: View {
         guard let code = store.latestSnapshot?.adapterPDRevisionCode else {
             return "--"
         }
-        return "修订码 \(code)"
+        switch code {
+        case 1: return "PD 1.0"
+        case 2: return "PD 2.0"
+        case 3: return "PD 3.0"
+        default: return "PD 修订码 \(code)"
+        }
     }
 
     private var headerTime: String {
