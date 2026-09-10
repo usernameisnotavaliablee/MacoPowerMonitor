@@ -38,9 +38,7 @@ struct ContentView: View {
                     processSection
                     footerSection
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 20)
+                .padding(10)
             }
             .clipShape(RoundedRectangle(cornerRadius: 24))
         }
