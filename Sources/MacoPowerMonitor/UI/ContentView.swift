@@ -45,6 +45,7 @@ struct ContentView: View {
         .frame(width: AppConstants.panelWidth)
         .frame(height: AppConstants.panelHeight)
         .clipped()
+        .ignoresSafeArea()
         .sheet(isPresented: $showingSettings) {
             SettingsView(store: store)
         }
